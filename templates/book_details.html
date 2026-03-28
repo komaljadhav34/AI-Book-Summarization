@@ -1,0 +1,503 @@
+{% extends "base.html" %}
+
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+<script>
+    mermaid.initialize({ startOnLoad: false, theme: 'neutral' });
+</script>
+<div class="row fade-in">
+    <div class="col-md-10 mx-auto">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <a href="{{ url_for('books') }}" class="btn btn-outline-secondary btn-sm rounded-pill px-3"><i
+                    class="fas fa-arrow-left me-1"></i> Back to Library</a>
+            {% if book.user_id == current_user.id or current_user.role == 'admin' %}
+            <button type="button" class="btn btn-outline-danger btn-sm rounded-pill px-3" data-bs-toggle="modal"
+                data-bs-target="#deleteModal">
+                <i class="fas fa-trash-alt me-1"></i> Delete
+            </button>
+            {% endif %}
+        </div>
+
+        <div class="card shadow border-0 overflow-hidden">
+            <div class="card-header bg-primary text-white py-4 px-5">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h1 class="display-6 fw-bold mb-1">{{ book.title }}</h1>
+                        <p class="mb-0 opacity-75"><i class="fas fa-user-edit me-1"></i> By {{ book.author }}</p>
+                    </div>
+                    <span class="badge bg-white text-primary rounded-pill px-3 py-2 shadow-sm">
+                        <i class="fas fa-calendar-alt me-1"></i> {{ book.upload_date.strftime('%d %B %Y') }}
+                    </span>
+                </div>
+            </div>
+
+            <div class="card-body p-0">
+                <ul class="nav nav-tabs nav-fill bg-light border-bottom" id="bookTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active py-3 fw-bold" id="summary-tab" data-bs-toggle="tab"
+                            data-bs-target="#summary-pane" type="button" role="tab">
+                            <i class="fas fa-magic me-2"></i>AI Summary
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link py-3 fw-bold" id="mindmap-tab" data-bs-toggle="tab"
+                            data-bs-target="#mindmap-pane" type="button" role="tab" onclick="renderMindmap()">
+                            <i class="fas fa-project-diagram me-2"></i>Mindmap
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link py-3 fw-bold" id="quiz-tab" data-bs-toggle="tab"
+                            data-bs-target="#quiz-pane" type="button" role="tab" onclick="initQuiz()">
+                            <i class="fas fa-question-circle me-2"></i>Quiz
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link py-3 fw-bold text-muted" id="raw-tab" data-bs-toggle="tab"
+                            data-bs-target="#raw-pane" type="button" role="tab">
+                            <i class="fas fa-file-alt me-2"></i>Raw Content
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content" id="bookTabsContent">
+                    <!-- Summary Pane -->
+                    <div class="tab-pane fade show active p-5" id="summary-pane" role="tabpanel" tabindex="0">
+                        <div id="summaryActions" class="mb-3 text-end {% if not book.summary %}d-none{% endif %}">
+                            <div class="btn-group btn-group-sm rounded-pill overflow-hidden shadow-sm" role="group">
+                                <a href="{{ url_for('download_summary', book_id=book.id, format='txt') }}"
+                                    class="btn btn-dark border-0">TXT</a>
+                                <a href="{{ url_for('download_summary', book_id=book.id, format='pdf') }}"
+                                    class="btn btn-dark border-0">PDF</a>
+                                <button class="btn btn-secondary border-0 px-3" onclick="copyToClipboard(this)">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="summaryContainer">
+                            {% if book.processing_status == 'processing' %}
+                            <div class="text-center py-5 bg-light rounded-4 border">
+                                <div class="spinner-border text-primary mb-3" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <p class="text-primary fw-bold">Summarizing in background...</p>
+                                <p class="text-muted small">This may take a minute. You can stay here or come back later.</p>
+                            </div>
+                            {% elif book.processing_status == 'error' %}
+                            <div class="alert alert-danger rounded-4 p-4">
+                                <h5 class="alert-heading"><i class="fas fa-exclamation-triangle me-2"></i>Error</h5>
+                                <p class="mb-0">{{ book.error_message }}</p>
+                                <hr>
+                                <button class="btn btn-outline-danger btn-sm" data-bs-toggle="modal"
+                                    data-bs-target="#summarizeModal">Try Again</button>
+                            </div>
+                            {% elif book.summary %}
+                            <div class="p-4 bg-primary-subtle rounded-4 position-relative border border-primary-subtle">
+                                <p id="summaryText" class="lead mb-0" style="font-size: 1.15rem; line-height: 1.7; color: #2c3e50;">{{ book.summary }}</p>
+                            </div>
+                            {% else %}
+                            <div class="text-center py-5 bg-light rounded-4 border border-dashed">
+                                <div class="mb-3"><i class="fas fa-robot fa-3x text-muted opacity-50"></i></div>
+                                <p class="text-muted mb-4">No summary has been generated yet.</p>
+                                <button class="btn btn-primary px-4 py-2" type="button" data-bs-toggle="modal"
+                                    data-bs-target="#summarizeModal">
+                                    <i class="fas fa-sparkles me-1"></i> Generate Insights Now
+                                </button>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Mindmap Pane -->
+                    <div class="tab-pane fade p-5" id="mindmap-pane" role="tabpanel" tabindex="0">
+                        {% if book.mindmap and book.mindmap != 'None' %}
+                        <div class="mermaid-container bg-white p-4 rounded-4 border shadow-sm overflow-auto text-center">
+                            <pre class="mermaid" id="mermaid-graph">
+{{ book.mindmap }}
+                            </pre>
+                        </div>
+                        {% else %}
+                        <div class="text-center py-5 bg-light rounded-4 border border-dashed">
+                            <i class="fas fa-project-diagram fa-3x text-muted opacity-50 mb-3"></i>
+                            <p class="text-muted mb-4">No mindmap has been generated yet.</p>
+                            <button class="btn btn-primary px-4 py-2" onclick="generateFeature('mindmap', this)" {% if not book.summary %}disabled title="Generate summary first"{% endif %}>
+                                <i class="fas fa-magic me-1"></i> Generate Mindmap
+                            </button>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Quiz Pane -->
+                    <div class="tab-pane fade p-5" id="quiz-pane" role="tabpanel" tabindex="0">
+                        <!-- Store JSON data in a script tag to avoid character escaping issues in JS string literals -->
+                        <script id="quiz-data-json" type="application/json">{{ (book.quizzes if (book.quizzes and book.quizzes != 'None') else "[]") | safe }}</script>
+                        <div id="quiz-container">
+                            {% if book.quizzes and book.quizzes != 'None' %}
+                            <div id="quiz-start-view" class="text-center py-5 bg-light rounded-4 border">
+                                <i class="fas fa-brain fa-3x text-primary mb-3"></i>
+                                <h3>Test Your Knowledge!</h3>
+                                <p class="text-muted mb-4">We've prepared a custom quiz based on the book content.</p>
+                                <button class="btn btn-primary btn-lg px-5 rounded-pill" onclick="startQuiz()">
+                                    Start Quiz
+                                </button>
+                            </div>
+                            <div id="quiz-play-view" class="d-none">
+                                <div class="progress mb-4" style="height: 10px;">
+                                    <div id="quiz-progress" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                                </div>
+                                <div id="question-card" class="card border-0 shadow-sm rounded-4 overflow-hidden mb-4">
+                                    <div class="card-header bg-dark text-white p-4" style="background-color: #212529 !important;">
+                                        <h5 id="question-text" class="mb-0 fw-normal text-white"></h5>
+                                    </div>
+                                    <div class="card-body p-4">
+                                        <div id="options-container" class="d-grid gap-3">
+                                            <!-- Options injected here -->
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="badge bg-secondary px-3 py-2" id="question-counter">Question 1 / 5</span>
+                                    <button id="next-question-btn" class="btn btn-primary d-none rounded-pill px-4" onclick="handleNextQuestion()">
+                                        Next Question <i class="fas fa-arrow-right ms-2"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="quiz-result-view" class="d-none text-center py-5 bg-light rounded-4 border">
+                                <div id="score-icon" class="mb-3"></div>
+                                <h2 id="score-text" class="display-4 fw-bold mb-2">0/5</h2>
+                                <p id="feedback-text" class="lead mb-4"></p>
+                                <button class="btn btn-outline-primary rounded-pill px-4" onclick="resetQuiz()">Try Again</button>
+                            </div>
+                            {% else %}
+                            <div class="text-center py-5 bg-light rounded-4 border border-dashed">
+                                <i class="fas fa-question-circle fa-3x text-muted opacity-50 mb-3"></i>
+                                <p class="text-muted mb-4">No quiz has been generated yet.</p>
+                                <button class="btn btn-primary px-4 py-2" onclick="generateFeature('quiz', this)">
+                                    <i class="fas fa-magic me-1"></i> Generate Quiz
+                                </button>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Raw Content Pane -->
+                    <div class="tab-pane fade p-5" id="raw-pane" role="tabpanel" tabindex="0">
+                        <div class="bg-light p-4 rounded-4 border shadow-inner" style="max-height: 500px; overflow-y: auto;">
+                            <pre style="white-space: pre-wrap; font-family: 'Inter', sans-serif; font-size: 0.95rem; color: #495057;">{{ book.raw_text }}</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Summarize Modal -->
+<div class="modal fade" id="summarizeModal" tabindex="-1" aria-labelledby="summarizeModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="summarizeModalLabel">Summarize Options</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="summarizeForm">
+                    <div class="mb-3">
+                        <label for="maxLength" class="form-label">Max Length (words approx)</label>
+                        <select class="form-select" id="maxLength" name="max_length">
+                            <option value="100">Short (~100 words)</option>
+                            <option value="250" selected>Medium (~250 words)</option>
+                            <option value="500">Long (~500 words)</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="minLength" class="form-label">Min Length</label>
+                        <input type="number" class="form-control" id="minLength" name="min_length" value="50">
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Start Summarization</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="deleteModalLabel">Confirm Delete</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                Are you sure you want to delete "<strong>{{ book.title }}</strong>"? This action cannot be undone.
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form action="{{ url_for('delete_book', book_id=book.id) }}" method="POST">
+                    <button type="submit" class="btn btn-danger">Delete</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let pollInterval;
+
+    async function generateFeature(feature, btnInfo) {
+        const originalText = btnInfo.innerHTML;
+        btnInfo.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Generating...';
+        btnInfo.disabled = true;
+
+        try {
+            const response = await fetch(`/book/{{ book.id }}/generate_${feature}`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                location.reload(); // Reload to show the new content
+            } else {
+                alert("Error: " + (data.error || "Unknown error occurred"));
+                btnInfo.innerHTML = originalText;
+                btnInfo.disabled = false;
+            }
+        } catch (err) {
+            alert("Network error occurred.");
+            btnInfo.innerHTML = originalText;
+            btnInfo.disabled = false;
+        }
+    }
+
+    document.getElementById('summarizeForm').addEventListener('submit', async function (e) {
+        e.preventDefault();
+
+        // Hide modal
+        var myModalEl = document.getElementById('summarizeModal');
+        var modal = bootstrap.Modal.getInstance(myModalEl);
+        modal.hide();
+
+        const formData = new FormData(this);
+
+        try {
+            const response = await fetch("{{ url_for('summarize_book', book_id=book.id) }}", {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+
+            if (data.status === 'accepted') {
+                updateUIForProcessing();
+                startPolling();
+            } else {
+                alert("Error: " + data.error);
+            }
+        } catch (err) {
+            alert("An error occurred during summarization.");
+            console.error(err);
+        }
+    });
+
+    function updateUIForProcessing() {
+        const container = document.getElementById('summaryContainer');
+        container.innerHTML = `
+            <div class="text-center py-5 bg-light rounded-4 border">
+                <div class="spinner-border text-primary mb-3" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="text-primary fw-bold">Summarizing in background...</p>
+                <p class="text-muted small">This may take a minute for large documents. You can stay on this page or come back later.</p>
+            </div>
+        `;
+        document.getElementById('summaryActions').classList.add('d-none');
+    }
+
+    function startPolling() {
+        if (pollInterval) clearInterval(pollInterval);
+        pollInterval = setInterval(checkStatus, 3000); // Poll every 3 seconds
+    }
+
+    async function checkStatus() {
+        try {
+            const response = await fetch("{{ url_for('book_status', book_id=book.id) }}");
+            const data = await response.json();
+
+            if (data.status === 'completed') {
+                clearInterval(pollInterval);
+                location.reload(); // Simplest way to update everything
+            } else if (data.status === 'error') {
+                clearInterval(pollInterval);
+                const container = document.getElementById('summaryContainer');
+                container.innerHTML = `
+                    <div class="alert alert-danger rounded-4 p-4">
+                        <h5 class="alert-heading"><i class="fas fa-exclamation-triangle me-2"></i>Summarization Error</h5>
+                        <p class="mb-0">${data.error}</p>
+                        <hr>
+                        <button class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#summarizeModal">Try Again</button>
+                    </div>
+                `;
+            }
+        } catch (err) {
+            console.error("Polling error:", err);
+        }
+    }
+
+    // Start polling if already processing on page load
+    const isProcessingOnLoad = "{{ book.processing_status }}" === "processing";
+    if (isProcessingOnLoad) {
+        startPolling();
+    }
+
+    function copyToClipboard(btn) {
+        const text = document.getElementById('summaryText').innerText;
+        navigator.clipboard.writeText(text).then(() => {
+            const icon = btn.querySelector('i');
+            icon.classList.remove('fa-copy');
+            icon.classList.add('fa-check');
+            setTimeout(() => {
+                icon.classList.remove('fa-check');
+                icon.classList.add('fa-copy');
+            }, 2000);
+        });
+    }
+
+    // --- Mindmap Logic ---
+    function renderMindmap() {
+        setTimeout(() => {
+            mermaid.run({
+                nodes: document.querySelectorAll('.mermaid'),
+            });
+        }, 100);
+    }
+
+    // --- Quiz Logic ---
+    let quizData = [];
+    try {
+        const quizDataElement = document.getElementById('quiz-data-json');
+        if (quizDataElement) {
+            quizData = JSON.parse(quizDataElement.textContent);
+            console.log("DEBUG: Parsed Quiz Data:", quizData);
+        }
+    } catch(e) {
+        console.error("Error parsing quiz data:", e);
+    }
+    
+    let currentQuestionIdx = 0;
+    let score = 0;
+    let selectedOption = null;
+
+    function initQuiz() {
+        if (quizData.length === 0) return;
+        resetQuizState();
+    }
+
+    function startQuiz() {
+        document.getElementById('quiz-start-view').classList.add('d-none');
+        document.getElementById('quiz-play-view').classList.remove('d-none');
+        showQuestion();
+    }
+
+    function resetQuizState() {
+        currentQuestionIdx = 0;
+        score = 0;
+        document.getElementById('quiz-start-view').classList.remove('d-none');
+        document.getElementById('quiz-play-view').classList.add('d-none');
+        document.getElementById('quiz-result-view').classList.add('d-none');
+    }
+
+    function showQuestion() {
+        const q = quizData[currentQuestionIdx];
+        console.log("DEBUG: Showing Question:", q);
+        
+        if (!q || !q.question) {
+            console.error("Quiz data item is invalid:", q);
+            document.getElementById('question-text').innerText = "Question data missing.";
+            return;
+        }
+
+        document.getElementById('question-text').innerText = q.question;
+        document.getElementById('question-counter').innerText = `Question ${currentQuestionIdx + 1} / ${quizData.length}`;
+        document.getElementById('quiz-progress').style.width = `${((currentQuestionIdx) / quizData.length) * 100}%`;
+        
+        const container = document.getElementById('options-container');
+        container.innerHTML = '';
+        selectedOption = null;
+        document.getElementById('next-question-btn').classList.add('d-none');
+
+        if (!q.options || !Array.isArray(q.options)) {
+            container.innerHTML = '<div class="alert alert-warning">Options data missing.</div>';
+            return;
+        }
+
+        q.options.forEach((opt, idx) => {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-outline-dark text-start p-3 rounded-3 option-btn text-dark w-100';
+            btn.style.borderColor = "#dee2e6";
+            btn.innerText = opt || `Option ${idx + 1}`;
+            btn.onclick = () => selectOption(idx, btn);
+            container.appendChild(btn);
+        });
+    }
+
+    function selectOption(idx, btn) {
+        if (selectedOption !== null) return;
+        selectedOption = idx;
+        
+        const q = quizData[currentQuestionIdx];
+        const buttons = document.querySelectorAll('.option-btn');
+        
+        if (idx === q.correct) {
+            btn.classList.remove('btn-outline-dark');
+            btn.classList.add('btn-success');
+            score++;
+        } else {
+            btn.classList.remove('btn-outline-dark');
+            btn.classList.add('btn-danger');
+            buttons[q.correct].classList.remove('btn-outline-dark');
+            buttons[q.correct].classList.add('btn-success');
+        }
+
+        document.getElementById('next-question-btn').classList.remove('d-none');
+        if (currentQuestionIdx === quizData.length - 1) {
+            document.getElementById('next-question-btn').innerHTML = 'Finish <i class="fas fa-check-circle ms-2"></i>';
+        }
+    }
+
+    function handleNextQuestion() {
+        currentQuestionIdx++;
+        if (currentQuestionIdx < quizData.length) {
+            showQuestion();
+        } else {
+            showResult();
+        }
+    }
+
+    function showResult() {
+        document.getElementById('quiz-play-view').classList.add('d-none');
+        document.getElementById('quiz-result-view').classList.remove('d-none');
+        document.getElementById('score-text').innerText = `${score} / ${quizData.length}`;
+        
+        const iconContainer = document.getElementById('score-icon');
+        const feedbackText = document.getElementById('feedback-text');
+        const pct = (score / quizData.length) * 100;
+        
+        if (pct >= 80) {
+            iconContainer.innerHTML = '<i class="fas fa-trophy fa-4x text-warning animate-bounce"></i>';
+            feedbackText.innerText = "Excellent! You've mastered this content.";
+        } else if (pct >= 50) {
+            iconContainer.innerHTML = '<i class="fas fa-thumbs-up fa-4x text-primary"></i>';
+            feedbackText.innerText = "Good job! You have a solid understanding.";
+        } else {
+            iconContainer.innerHTML = '<i class="fas fa-book-open fa-4x text-secondary"></i>';
+            feedbackText.innerText = "Keep learning! A quick review might help.";
+        }
+    }
+
+    function resetQuiz() {
+        resetQuizState();
+        startQuiz();
+    }
+</script>
+{% endblock %}
