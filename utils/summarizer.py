@@ -19,7 +19,8 @@ def load_model():
     if summarizer_pipeline is None:
         logger.info("Loading summarization model...")
         try:
-            summarizer_pipeline = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+            # Transformers 5.x unified task name to text-generation
+            summarizer_pipeline = pipeline("text-generation", model="sshleifer/distilbart-cnn-12-6")
             logger.info("Model loaded successfully.")
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
@@ -57,8 +58,11 @@ def generate_summary(text, max_length=150, min_length=40):
             eff_min = min(min_length, max(30, int(eff_max * 0.5)))
             
             res = summarizer(chunk, max_length=eff_max, min_length=eff_min, do_sample=False)
-            if res and 'summary_text' in res[0]:
-                chunk_summaries.append(res[0]['summary_text'])
+            if res:
+                if 'summary_text' in res[0]:
+                    chunk_summaries.append(res[0]['summary_text'])
+                elif 'generated_text' in res[0]:
+                    chunk_summaries.append(res[0]['generated_text'])
             
             logger.info(f"Successfully processed chunk {i+1}/{len(chunks)}")
         except Exception as e:
@@ -85,12 +89,17 @@ def generate_summary(text, max_length=150, min_length=40):
             # Adjust final pass limits based on user preference
             final_res = summarizer(combined_summary[:4000], # BART limit safe window
                                  max_length=max_length, 
-                                 min_line_length=min_length, 
+                                 min_length=min_length, 
                                  do_sample=False)
-            if final_res and 'summary_text' in final_res[0]:
-                final_summary = final_res[0]['summary_text']
-                logger.info("Hierarchical pass successful.")
-                return final_summary
+            if final_res:
+                if 'summary_text' in final_res[0]:
+                    final_summary = final_res[0]['summary_text']
+                    logger.info("Hierarchical pass successful.")
+                    return final_summary
+                elif 'generated_text' in final_res[0]:
+                    final_summary = final_res[0]['generated_text']
+                    logger.info("Hierarchical pass successful.")
+                    return final_summary
         except Exception as e:
             logger.error(f"Error in hierarchical pass: {e}. Falling back to combined chunks.")
     
@@ -107,12 +116,18 @@ def extract_topic(text, max_tokens=8):
         summarizer = load_model()
         # We use very aggressive compression for branch titles
         res = summarizer(text[:500], max_length=max_tokens, min_length=3, do_sample=False)
-        if res and 'summary_text' in res[0]:
-            topic = res[0]['summary_text'].strip()
-            # Clean up trailing punctuation
-            topic = re.sub(r'[.!?,;:]+$', '', topic)
-            # Apply Title Case for professional look
-            return topic.title()
+        if res:
+            topic = None
+            if 'summary_text' in res[0]:
+                topic = res[0]['summary_text'].strip()
+            elif 'generated_text' in res[0]:
+                topic = res[0]['generated_text'].strip()
+                
+            if topic:
+                # Clean up trailing punctuation
+                topic = re.sub(r'[.!?,;:]+$', '', topic)
+                # Apply Title Case for professional look
+                return topic.title()
     except Exception as e:
         logger.error(f"Error extracting topic: {e}")
     
