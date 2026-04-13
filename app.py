@@ -383,10 +383,12 @@ def download_summary(book_id, format):
 
     return redirect(url_for('book_details', book_id=book_id))
 
+with app.app_context():
+    db.create_all()
+
 # ---------------- RUN ----------------
 if __name__ == "__main__":
     with app.app_context():
-        db.create_all()
         # Pre-load the summarization model
         try:
             from utils.summarizer import load_model
