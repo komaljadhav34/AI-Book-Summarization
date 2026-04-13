@@ -1,133 +1,145 @@
-from transformers import pipeline
-from .chunker import chunk_text
+import os
+import requests
+import time
 import logging
 import re
+from .chunker import chunk_text
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global variable to cache the model pipeline
-summarizer_pipeline = None
+# We use the free Hugging Face Inference API for BART CNN
+HF_API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-cnn"
+
+def get_api_key():
+    return os.environ.get("HF_API_KEY", "")
 
 def load_model():
     """
-    Loads the summarization pipeline. 
-    Using 'sshleifer/distilbart-cnn-12-6' for a good balance of speed and quality.
+    Deprecated for API usage. We keep the signature so app.py doesn't break.
     """
-    global summarizer_pipeline
-    if summarizer_pipeline is None:
-        logger.info("Loading summarization model...")
+    logger.info("Using Hugging Face Inference API. No local model loaded into RAM.")
+    pass
+
+def query_hf_api(payload, retries=5):
+    api_key = get_api_key()
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        
+    for attempt in range(retries):
         try:
-            # Transformers 5.x unified task name to text-generation
-            summarizer_pipeline = pipeline("text-generation", model="sshleifer/distilbart-cnn-12-6")
-            logger.info("Model loaded successfully.")
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            raise e
-    return summarizer_pipeline
+            response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=30)
+            
+            # API indicates the model is currently loading on their end
+            if response.status_code == 503:
+                data = response.json()
+                wait_time = data.get("estimated_time", 15.0)
+                logger.warning(f"Model is loading on HF Server. Waiting {wait_time}s...")
+                time.sleep(max(wait_time, 5))
+                continue
+                
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API Request failed: {e}. Attempt {attempt + 1}/{retries}")
+            if attempt == retries - 1:
+                raise Exception(f"Hugging Face API Error: {str(e)}")
+            time.sleep(3)
+        
+    raise Exception("Hugging Face API failed after multiple retries.")
 
 def generate_summary(text, max_length=150, min_length=40):
-    """
-    Orchestrates the summarization process with hierarchical support for large texts.
-    """
     if not text:
-        logger.warning("Empty text provided for summarization.")
         return ""
 
-    logger.info(f"Starting summarization. Input length: {len(text)} characters.")
-    summarizer = load_model()
-    # Get tokenizer from pipeline
-    tokenizer = summarizer.tokenizer
+    if not get_api_key():
+        logger.warning("HF_API_KEY is not set. Inference API may rate limit or fail. Please set it as an Environment Variable in Render.")
+
+    logger.info(f"Starting API summarization. Input length: {len(text)} characters.")
     
-    # 1. First Pass: Chunk and Summarize
-    # 800 tokens is a safe limit for BART (max 1024)
-    chunks = chunk_text(text, max_tokens=800, overlap=100, tokenizer=tokenizer)
+    # We pass tokenizer=None so chunker uses simple word splitting. Max 600 words per chunk for BART.
+    chunks = chunk_text(text, max_tokens=600, overlap=100)
     logger.info(f"Text split into {len(chunks)} chunks.")
     
     chunk_summaries = []
     
     for i, chunk in enumerate(chunks):
-        try:
-            chunk_word_count = len(chunk.split())
-            logger.info(f"Processing chunk {i+1}/{len(chunks)} ({chunk_word_count} words)...")
-            
-            # Ensure min_length/max_length are sensible for the chunk size
-            # For hierarchical, we want concise summaries per chunk
-            eff_max = min(max_length, max(60, int(chunk_word_count * 0.4)))
-            eff_min = min(min_length, max(30, int(eff_max * 0.5)))
-            
-            res = summarizer(chunk, max_length=eff_max, min_length=eff_min, do_sample=False)
-            if res:
-                if 'summary_text' in res[0]:
-                    chunk_summaries.append(res[0]['summary_text'])
-                elif 'generated_text' in res[0]:
-                    chunk_summaries.append(res[0]['generated_text'])
-            
-            logger.info(f"Successfully processed chunk {i+1}/{len(chunks)}")
-        except Exception as e:
-            logger.error(f"Error summarising chunk {i+1}: {str(e)}")
-            
+        chunk_word_count = len(chunk.split())
+        logger.info(f"Processing chunk {i+1}/{len(chunks)} ({chunk_word_count} words)...")
+        
+        eff_max = min(max_length, max(60, int(chunk_word_count * 0.4)))
+        eff_min = min(min_length, max(30, int(eff_max * 0.5)))
+        
+        payload = {
+            "inputs": chunk,
+            "parameters": {
+                "max_length": eff_max,
+                "min_length": eff_min,
+                "do_sample": False
+            }
+        }
+        res = query_hf_api(payload)
+        
+        if res and isinstance(res, list):
+            if 'summary_text' in res[0]:
+                chunk_summaries.append(res[0]['summary_text'])
+            elif 'generated_text' in res[0]:
+                chunk_summaries.append(res[0]['generated_text'])
+                
+        logger.info(f"Successfully processed chunk {i+1}/{len(chunks)}")
+        
     if not chunk_summaries:
-        raise Exception("Summarization failed to produce any output.")
+        raise Exception("Summarization failed to produce any output. (Did you set HF_API_KEY?)")
 
-    # 2. Second Pass: Hierarchical if needed
-    # If we have many chunks, the concatenated summary might still be too long or disjointed.
-    # BART model usually has a max position embedding of 1024 tokens (~700-800 words).
     combined_summary = " ".join(chunk_summaries)
     combined_words = len(combined_summary.split())
     
     if len(chunk_summaries) > 3 or combined_words > max_length * 1.5:
-        logger.info(f"Performing second pass summarization as combined summary is {combined_words} words.")
-        
-        # If the combined summary is still very large, we might need a third pass, 
-        # but for most use cases one hierarchical step is enough.
-        # We'll treat the combined summaries as a new text and summarize it.
-        # We use a larger max_length for the final pass if desired.
-        try:
-            # We don't want to over-summarize if the user wanted a long summary
-            # Adjust final pass limits based on user preference
-            final_res = summarizer(combined_summary[:4000], # BART limit safe window
-                                 max_length=max_length, 
-                                 min_length=min_length, 
-                                 do_sample=False)
-            if final_res:
-                if 'summary_text' in final_res[0]:
-                    final_summary = final_res[0]['summary_text']
-                    logger.info("Hierarchical pass successful.")
-                    return final_summary
-                elif 'generated_text' in final_res[0]:
-                    final_summary = final_res[0]['generated_text']
-                    logger.info("Hierarchical pass successful.")
-                    return final_summary
-        except Exception as e:
-            logger.error(f"Error in hierarchical pass: {e}. Falling back to combined chunks.")
+        logger.info(f"Performing second pass summarization on {combined_words} words.")
+        payload = {
+            "inputs": combined_summary[:4000],
+            "parameters": {
+                "max_length": max_length,
+                "min_length": min_length,
+                "do_sample": False
+            }
+        }
+        final_res = query_hf_api(payload)
+        if final_res and isinstance(final_res, list):
+            if 'summary_text' in final_res[0]:
+                return final_res[0]['summary_text']
+            elif 'generated_text' in final_res[0]:
+                return final_res[0]['generated_text']
     
     return combined_summary
 
 def extract_topic(text, max_tokens=8):
-    """
-    Uses the summarization model to extract a very short, punchy topic/title from a text block.
-    """
     if not text or len(text.strip()) < 10:
         return "Key Concept"
         
     try:
-        summarizer = load_model()
-        # We use very aggressive compression for branch titles
-        res = summarizer(text[:500], max_length=max_tokens, min_length=3, do_sample=False)
-        if res:
-            topic = None
+        payload = {
+            "inputs": text[:500],
+            "parameters": {
+                "max_length": max_tokens,
+                "min_length": 3,
+                "do_sample": False
+            }
+        }
+        res = query_hf_api(payload)
+        topic = None
+        if res and isinstance(res, list):
             if 'summary_text' in res[0]:
                 topic = res[0]['summary_text'].strip()
             elif 'generated_text' in res[0]:
                 topic = res[0]['generated_text'].strip()
                 
-            if topic:
-                # Clean up trailing punctuation
-                topic = re.sub(r'[.!?,;:]+$', '', topic)
-                # Apply Title Case for professional look
-                return topic.title()
+        if topic:
+            topic = re.sub(r'[.!?,;:]+$', '', topic)
+            return topic.title()
     except Exception as e:
         logger.error(f"Error extracting topic: {e}")
     
